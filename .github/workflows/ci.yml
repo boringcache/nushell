@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - 'patch-release-*'
+      - boringcache
 
 name: Continuous Integration
 
@@ -16,6 +17,7 @@ env:
   NU_LOG_LEVEL: DEBUG
   NU_TEST_SKIP_DEPS_BUILD: true
   NUSHELL_CARGO_PROFILE: ci
+  CARGO_INCREMENTAL: "1"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref && github.ref || github.run_id }}
@@ -33,6 +35,9 @@ jobs:
         github.event.pull_request.stack.position ==
           github.event.pull_request.stack.size
       )
+    permissions:
+      contents: read
+      id-token: write
     env:
       build-target: ${{ matrix.platform.target }}
       working-directory: ${{ github.workspace }}
@@ -42,15 +47,24 @@ jobs:
       matrix:
         platform: &platforms
           - name: Linux
-            runner: &runner_linux incredibuild-ubuntu-2204
+            runner: &runner_linux ubuntu-22.04
             target: &target_linux x86_64-unknown-linux-gnu
           - name: Windows
             runner: &runner_windows incredibuild-windows-2022
             target: &target_windows x86_64-pc-windows-msvc
           - name: MacOS
-            runner: &runner_macos incredibuild-macos-latest
-            target: &target_macos x86_64-apple-darwin
+            runner: &runner_macos macos-15
+            target: &target_macos aarch64-apple-darwin
     steps:
+
+      - name: Runner Hardware
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Linux) lscpu | grep -E '^(Model name|CPU\(s\)):'; free -h | head -2 ;;
+            macOS) sysctl -n machdep.cpu.brand_string hw.ncpu hw.memsize ;;
+            Windows) powershell -NoProfile -Command 'Get-CimInstance Win32_Processor | Format-List Name,NumberOfCores,NumberOfLogicalProcessors; Get-CimInstance Win32_ComputerSystem | Format-List TotalPhysicalMemory' ;;
+          esac
 
       - &step_checkout_repo
         name: Checkout Repo
@@ -61,16 +75,12 @@ jobs:
         run: rustup target add ${{ env.build-target }}
         working-directory: ${{ env.working-directory }}
 
-      - &step_cache_rust
+      - &step_cache_boringcache
         name: Cache Rust
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        uses: boringcache/one@1781572d7b3ec5aef652f8ba479b981439b2776b # v1.48.2
         with:
-          workspaces: ${{ env.working-directory }} -> target
-          cache-all-crates: true
-          # Workspace crates are recompiled after an exact cache hit anyway (fingerprint
-          # mismatch), while restoring them dominates Cache Rust on Windows (~2.8 GB, ~54s).
-          # Cache dependencies only so restores stay small and useful.
-          cache-workspace-crates: false
+          mode: cargo
+          working-directory: ${{ env.working-directory }}
 
       # Fmt and Clippy run in the parallel lint job so they stay off the build/test critical path.
 
@@ -78,7 +88,9 @@ jobs:
         name: Build
         working-directory: ${{ env.working-directory }}
         run: >-
-          cargo --config "${{ github.workspace }}/.cargo/ci.toml" 
+          boringcache cargo --verbose --profile cargo-target
+          --target-scope "root-${{ github.run_id }}-${{ github.run_attempt }}" --skip-restore --skip-save --
+          --config "${{ github.workspace }}/.cargo/ci.toml"
           build ${{ env.cargo-options }} 
           --profile ${{ env.profile }}
 
@@ -86,15 +98,26 @@ jobs:
         name: Test
         working-directory: ${{ env.working-directory }}
         run: >-
-          cargo --config "${{ github.workspace }}/.cargo/ci.toml"
+          boringcache cargo --verbose --profile cargo-target
+          --target-scope "root-${{ github.run_id }}-${{ github.run_attempt }}" --skip-restore --skip-save --
+          --config "${{ github.workspace }}/.cargo/ci.toml"
           test ${{ env.cargo-options }}
           --profile ${{ env.profile }}
+
+      - name: Plugin process state on Linux failure
+        if: failure() && runner.os == 'Linux'
+        shell: bash
+        run: >-
+          ps -eo pid,ppid,stat,etimes,comm |
+          awk 'NR == 1 || $1 == 1 || $5 == "nu_plugin_inc"'
 
       - &step_doctest
         name: Doctest
         working-directory: ${{ env.working-directory }}
         run: >-
-          cargo --config "${{ github.workspace }}/.cargo/ci.toml" 
+          boringcache cargo --verbose --profile cargo-target
+          --target-scope "root-${{ github.run_id }}-${{ github.run_attempt }}" --skip-restore --skip-save --
+          --config "${{ github.workspace }}/.cargo/ci.toml"
           test --workspace --doc 
           --profile ${{ env.profile }}
 
@@ -155,6 +178,9 @@ jobs:
     name: ${{ matrix.platform.name }} / lint
     runs-on: ${{ matrix.platform.runner }}
     if: *job_if
+    permissions:
+      contents: read
+      id-token: write
     env:
       build-target: ${{ matrix.platform.target }}
       working-directory: ${{ github.workspace }}
@@ -166,7 +192,13 @@ jobs:
     steps:
       - *step_checkout_repo
       - *step_setup_rust_toolchain
-      - *step_cache_rust
+
+      - name: Cache Rust
+        uses: boringcache/one@1781572d7b3ec5aef652f8ba479b981439b2776b # v1.48.2
+        with:
+          mode: archive
+          cache-profiles: lint-deps
+          working-directory: ${{ env.working-directory }}
 
       - &step_fmt
         name: Fmt
@@ -175,16 +207,17 @@ jobs:
           rustup component add rustfmt
           cargo fmt --all --check
 
-      - &step_clippy
-        name: Clippy
+      - name: Clippy
+        shell: bash
         env:
           CARGO_BUILD_WARNINGS: deny
         working-directory: ${{ env.working-directory }}
         run: >-
           rustup component add clippy
 
-          cargo --config "${{ github.workspace }}/.cargo/ci.toml" 
-          clippy ${{ env.cargo-options }} 
+          boringcache cargo --verbose --profile lint-target --
+          --config "${{ github.workspace }}/.cargo/ci.toml"
+          clippy ${{ env.cargo-options }}
           --profile ${{ env.profile }}
 
       - *step_assert_clean_repo
@@ -193,6 +226,9 @@ jobs:
     name: WASM / root
     runs-on: *runner_linux
     if: *job_if
+    permissions:
+      contents: read
+      id-token: write
     env:
       build-target: wasm32-unknown-unknown
       working-directory: ${{ github.workspace }}
@@ -222,21 +258,41 @@ jobs:
     steps:
       - *step_checkout_repo
       - *step_setup_rust_toolchain
-      - *step_cache_rust
+      - name: Cache Rust
+        uses: boringcache/one@1781572d7b3ec5aef652f8ba479b981439b2776b # v1.48.2
+        with:
+          mode: archive
+          cache-profiles: wasm-deps
+          working-directory: ${{ env.working-directory }}
       - name: Check
+        shell: bash
         working-directory: ${{ env.working-directory }}
         run: >-
-          cargo --config "${{ github.workspace }}/.cargo/ci.toml"
+          boringcache cargo --verbose --profile wasm-target
+          --target-scope "wasm-${{ github.run_id }}-${{ github.run_attempt }}" --skip-save --
+          --config "${{ github.workspace }}/.cargo/ci.toml"
           check ${{ env.cargo-options }}
           --profile ${{ env.profile }}
 
-      - *step_build
+      - name: Build
+        shell: bash
+        working-directory: ${{ env.working-directory }}
+        run: >-
+          boringcache cargo --verbose --profile wasm-target
+          --target-scope "wasm-${{ github.run_id }}-${{ github.run_attempt }}" --skip-restore --
+          --config "${{ github.workspace }}/.cargo/ci.toml"
+          build ${{ env.cargo-options }}
+          --profile ${{ env.profile }}
+
       - *step_assert_clean_repo
 
   fuzz:
     name: ${{ matrix.platform.name }} / ${{ matrix.crate }} / fuzz
     runs-on: ${{ matrix.platform.runner }}
     if: *job_if
+    permissions:
+      contents: read
+      id-token: write
     env:
       build-target: ${{ matrix.platform.target }}
       working-directory: ${{ github.workspace }}/crates/${{ matrix.crate }}/fuzz
@@ -251,7 +307,18 @@ jobs:
     steps:
       - *step_checkout_repo
       - *step_setup_rust_toolchain
-      - *step_cache_rust
+      - *step_cache_boringcache
       - *step_fmt
-      - *step_clippy
+      - &step_clippy
+        name: Clippy
+        env:
+          CARGO_BUILD_WARNINGS: deny
+        working-directory: ${{ env.working-directory }}
+        run: >-
+          rustup component add clippy
+
+          boringcache cargo --verbose --profile cargo-target --skip-restore --skip-save --
+          --config "${{ github.workspace }}/.cargo/ci.toml"
+          clippy ${{ env.cargo-options }}
+          --profile ${{ env.profile }}
       - *step_assert_clean_repo

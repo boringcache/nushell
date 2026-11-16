@@ -1,0 +1,72 @@
+workspace = "boringcache/nu"
+
+[entries.cargo-registry-cache]
+tag = "cargo-registry-cache"
+
+[entries.cargo-registry-index]
+tag = "cargo-registry-index"
+
+[entries.cargo-git-db]
+tag = "cargo-git-db"
+
+[entries.cargo-target]
+kind = "cargo-target"
+tag = "cargo-target-incremental"
+path = "target"
+
+[entries.lint-cargo-registry-cache]
+tag = "lint-cargo-registry-cache"
+path = "~/.cargo/registry/cache"
+
+[entries.lint-cargo-registry-index]
+tag = "lint-cargo-registry-index"
+path = "~/.cargo/registry/index"
+
+[entries.lint-cargo-git-db]
+tag = "lint-cargo-git-db"
+path = "~/.cargo/git/db"
+
+[entries.lint-cargo-target]
+kind = "cargo-target"
+tag = "lint-cargo-target-incremental"
+path = "target"
+
+[entries.wasm-cargo-registry-cache]
+tag = "wasm-cargo-registry-cache"
+path = "~/.cargo/registry/cache"
+
+[entries.wasm-cargo-registry-index]
+tag = "wasm-cargo-registry-index"
+path = "~/.cargo/registry/index"
+
+[entries.wasm-cargo-git-db]
+tag = "wasm-cargo-git-db"
+path = "~/.cargo/git/db"
+
+[entries.wasm-cargo-target]
+kind = "cargo-target"
+tag = "wasm-cargo-target-incremental"
+path = "target"
+
+[profiles.cargo-target]
+entries = ["cargo-target"]
+
+[profiles.cargo]
+entries = ["cargo-registry-cache", "cargo-registry-index", "cargo-git-db", "cargo-target"]
+
+[profiles.lint-deps]
+entries = ["lint-cargo-registry-cache", "lint-cargo-registry-index", "lint-cargo-git-db"]
+
+[profiles.lint-target]
+entries = ["lint-cargo-target"]
+
+[profiles.wasm-deps]
+entries = ["wasm-cargo-registry-cache", "wasm-cargo-registry-index", "wasm-cargo-git-db"]
+
+[profiles.wasm-target]
+entries = ["wasm-cargo-target"]
+
+[adapters.cargo]
+profiles = ["cargo"]
+compiler-cache = "none"
+target-budget = "40GiB"

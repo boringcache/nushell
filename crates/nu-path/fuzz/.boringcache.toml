@@ -1,0 +1,26 @@
+workspace = "boringcache/nu"
+
+[entries.cargo-registry-cache]
+tag = "fuzz-nu-path-cargo-registry-cache"
+
+[entries.cargo-registry-index]
+tag = "fuzz-nu-path-cargo-registry-index"
+
+[entries.cargo-git-db]
+tag = "fuzz-nu-path-cargo-git-db"
+
+[entries.cargo-target]
+kind = "cargo-target"
+tag = "fuzz-nu-path-cargo-target-incremental"
+path = "target"
+
+[profiles.cargo-target]
+entries = ["cargo-target"]
+
+[profiles.cargo]
+entries = ["cargo-registry-cache", "cargo-registry-index", "cargo-git-db", "cargo-target"]
+
+[adapters.cargo]
+profiles = ["cargo"]
+compiler-cache = "none"
+target-budget = "40GiB"
